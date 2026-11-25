@@ -1,91 +1,86 @@
 # Efficacité énergétique des centres de données
 
-Projet d'intelligence artificielle pour optimiser le contrôle du refroidissement d'un centre de données. Le notebook combine la prévision de charge serveur, la détection thermique et un contrôleur HVAC afin d'estimer les économies d'énergie, de coût et d'émissions de CO2 par rapport à une consigne fixe.
+Projet de démonstration pour anticiper la charge des serveurs, détecter les risques de points chauds et proposer une consigne de refroidissement plus efficace.
 
-**Notebook principal :** [datacenter_cooling_ai.ipynb](./datacenter_cooling_ai.ipynb)  
-**Rapport technique :** [Rapport technique - Efficacité énergétique des centres de données.docx](./Rapport%20technique%20%E2%80%94%20Efficacit%C3%A9%20%C3%A9nerg%C3%A9tique%20des%20centres%20de%20donn%C3%A9es.docx)
+## Objectifs et composants
 
-## Fonctionnement
-
-Le projet comprend trois modèles et une évaluation énergétique :
-
-| Composant | Technique | Objectif |
+| Composant | Technique | Fonction |
 |---|---|---|
-| Prévision | LSTM | Prédire la charge CPU des serveurs sur les 30 prochaines minutes |
-| Analyse thermique | CNN | Lire une carte thermique 2D des racks et estimer le risque de point chaud |
-| Contrôle HVAC | Random Forest | Choisir dynamiquement la température de soufflage |
-| Évaluation | Modèle énergétique simplifié | Estimer les kWh, coûts et émissions économisés |
+| Prévision de charge | LSTM | Prévoir la charge CPU sur les 30 prochaines minutes |
+| Cartes thermiques | CNN | Estimer le risque de point chaud à partir de cartes 2D |
+| Pilotage HVAC | Random Forest | Proposer une consigne de soufflage entre 16 et 26 °C |
+| Démonstration | Streamlit | Explorer les résultats, les journaux et une décision de contrôle |
 
-Les données sont alignées à un pas de temps de 5 minutes. La série est divisée chronologiquement en ensembles d'entraînement, de validation et de test (70 % / 15 % / 15 %).
+Le notebook peut utiliser les jeux Kaggle **Server Workload Traces** et **Data Center Temperature & Humidity Sensors**. Ces données ne sont pas incluses dans le dépôt. Sans fichiers CSV compatibles, le notebook utilise un jeu synthétique reproductible et signale explicitement ce mode.
 
-## Données
+## Démarrage rapide (Windows PowerShell)
 
-Le notebook peut utiliser deux jeux de données Kaggle :
+Python 3.12 a été utilisé pour valider l’exécution.
 
-- des traces de charge ou d'utilisation des serveurs ;
-- des mesures de température et d'humidité du centre de données.
-
-Les chemins peuvent être définis avec `WORKLOAD_CSV` et `SENSOR_CSV`. Sinon, le notebook tente de détecter automatiquement les fichiers CSV disponibles dans `/kaggle/input`.
-
-Si aucun jeu de données réel n'est trouvé ou exploitable, le notebook bascule automatiquement sur un jeu synthétique reproductible. Il produit ainsi une démonstration complète avec une charge quotidienne, une zone chaude fixe dans une salle de racks et des capteurs virtuels.
-
-## Exécution sur Kaggle
-
-1. Importer le notebook dans Kaggle.
-2. Ajouter les deux jeux de données CSV.
-3. Activer éventuellement un accélérateur GPU T4.
-4. Exécuter toutes les cellules.
-
-La sortie locale ou Kaggle est placée dans :
-
-- `/kaggle/working` sur Kaggle ;
-- `./outputs` lors d'une exécution locale.
-
-## Exécution locale
-
-Créer un environnement Python puis installer les bibliothèques nécessaires :
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install notebook numpy pandas matplotlib tensorflow scikit-learn
-jupyter notebook datacenter_cooling_ai.ipynb
-```
-
-Sous Windows PowerShell, activer l'environnement avec :
+Depuis la racine du dépôt :
 
 ```powershell
-.venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-notebook.txt
+python -m pip install -r frontend\requirements.txt
 ```
 
-Pour utiliser vos propres données, affectez les chemins CSV dans la section de configuration du notebook :
+Ouvrir ensuite `datacenter_cooling_ai.ipynb` dans Jupyter et exécuter les cellules dans l’ordre :
 
-```python
-WORKLOAD_CSV = "./data/workload.csv"
-SENSOR_CSV = "./data/sensors.csv"
+```powershell
+python -m notebook datacenter_cooling_ai.ipynb
 ```
 
-## Résultats produits
+Pour lancer le tableau de bord :
 
-Le notebook affiche notamment :
+```powershell
+Set-Location frontend
+python -m streamlit run app.py
+```
 
-- la charge CPU, la température des racks et l'humidité ;
-- les performances du LSTM ;
-- les performances du CNN sur les points chauds ;
-- l'importance des variables du Random Forest ;
-- la comparaison entre le contrôle dynamique et une consigne fixe ;
-- une estimation des économies d'énergie, de coût et de CO2.
+L’application est disponible à `http://localhost:8501`. Elle recherche les résultats dans `frontend/outputs/`, puis dans `outputs/` à la racine du dépôt. Vous pouvez aussi préciser un autre dossier dans sa barre latérale.
 
-Il génère également :
+## Utiliser les données Kaggle
 
-- `outputs/metrics.json` : indicateurs d'évaluation ;
-- `outputs/test_control_log.csv` : journaux de consigne, refroidissement et consommation sur l'ensemble de test.
+1. Télécharger les deux jeux de données Kaggle et placer les CSV dans un dossier local (par exemple `data/`).
+2. Dans la cellule `CONFIG` du notebook, renseigner `WORKLOAD_CSV` et `SENSOR_CSV` avec les chemins des fichiers.
+3. Exécuter toutes les cellules et vérifier dans la sortie que les fichiers attendus ont été chargés et que le mode synthétique n’a pas été activé.
 
-## Hypothèses et limites
+Le notebook essaie aussi de détecter les fichiers sous `/kaggle/input` lorsqu’il est exécuté sur Kaggle. Si des chemins explicites sont fournis mais que les fichiers sont invalides, l’exécution s’arrête avec l’erreur de lecture au lieu de masquer le problème par un jeu synthétique.
 
-- Les données publiques ne contiennent généralement pas d'historique réel des actions HVAC.
-- Le Random Forest apprend donc à reproduire une politique d'oracle calculée avec les températures futures.
-- L'énergie, le COP du système de refroidissement et les émissions sont estimés à partir de paramètres simplifiés configurables dans le notebook.
-- Les températures, capteurs et éventuels points chauds peuvent être simulés ou reconstruits à partir des colonnes disponibles.
-- Les résultats constituent une démonstration technique, pas une validation physique d'un centre de données réel.
-- Pour une mise en production, les modèles doivent être validés sur une période indépendante avec des mesures HVAC réelles.
+## Fichiers produits
+
+Le notebook crée `outputs/` dans son répertoire de travail (ou `/kaggle/working/` sur Kaggle) :
+
+- `metrics.json` : métriques des modèles et de l’estimation énergétique ;
+- `test_control_log.csv` : charge, consigne proposée et puissance de refroidissement sur le test ;
+- `lstm_cpu_forecast.keras`, `cnn_hotspot.keras` : modèles de prévision et de classification ;
+- `rf_hvac_controller.joblib` : modèle de proposition de consigne.
+
+Le tableau de bord lit ces fichiers. Les artefacts générés ne sont pas nécessaires au code source et sont ignorés par Git.
+
+## Tests
+
+Depuis la racine du dépôt, après installation des dépendances du frontend :
+
+```powershell
+python -m unittest discover -s frontend\tests -v
+```
+
+## Méthodologie et limites
+
+Les séries sont alignées sur un pas de cinq minutes, puis séparées chronologiquement en ensembles d’entraînement, validation et test. Les jeux Kaggle peuvent provenir de salles et de périodes différentes ; leur alignement ne constitue pas une mesure de causalité physique.
+
+Les sources publiques ne fournissent pas toujours les coordonnées physiques des capteurs ni les actions HVAC réelles. Le Random Forest apprend donc à imiter une politique oracle basée sur un modèle thermique simplifié. L’énergie, le PUE, les coûts et les émissions sont des estimations paramétrables, pas des mesures d’un site.
+
+Les prédictions LSTM et CNN utilisées comme variables d’entraînement du Random Forest sont produites par des modèles ajustés sur la période d’entraînement. Elles sont donc en partie « in-sample » ; une validation chronologique walk-forward est nécessaire avant d’interpréter les résultats comme une performance de généralisation.
+
+**Cette démonstration ne commande pas d’équipement.** Toute utilisation réelle nécessiterait une validation avec des mesures HVAC, des limites de sécurité validées par des spécialistes et un mécanisme de retour à une consigne sûre.
+
+## Livrables
+
+- [Notebook de modélisation](./datacenter_cooling_ai.ipynb)
+- [Rapport technique](./Rapport%20technique%20%E2%80%94%20Efficacit%C3%A9%20%C3%A9nerg%C3%A9tique%20des%20centres%20de%20donn%C3%A9es.docx)
+- [Interface Streamlit](./frontend/app.py)
+- [Instructions du frontend](./frontend/README.md)

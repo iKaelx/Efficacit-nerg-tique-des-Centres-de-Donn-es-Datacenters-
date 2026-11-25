@@ -1,0 +1,7 @@
+notebook
+numpy
+pandas
+matplotlib
+tensorflow>=2.16
+scikit-learn
+joblib

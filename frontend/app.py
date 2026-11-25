@@ -8,7 +8,7 @@ Lit les fichiers produits par le notebook (dossier outputs/) :
 Lancer :  streamlit run app.py
 """
 import json
-import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,9 +18,29 @@ import streamlit as st
 st.set_page_config(page_title="Refroidissement IA – Datacenter", page_icon="🌡️", layout="wide")
 
 # ---- Paramètres identiques à ceux du notebook (section CONFIG) ----
+APP_DIR = Path(__file__).resolve().parent
 RF_FEATS = ["cpu_now", "cpu_pred", "hot_prob", "temp_mean", "temp_max", "hum", "hour_sin", "hour_cos"]
 SP_MIN, SP_MAX = 16.0, 26.0
 TEAL, GREY, RED = "#0E6B6B", "#8A9A9E", "#C0392B"
+REQUIRED_METRICS = {
+    "energy_saved_kWh",
+    "energy_saved_pct",
+    "CO2_avoided_kg",
+    "cost_saved",
+    "PUE_AI",
+    "PUE_baseline",
+    "test_days",
+    "cooling_kWh_baseline",
+    "cooling_kWh_AI",
+    "time_above_hot_threshold_baseline_pct",
+    "time_above_hot_threshold_AI_pct",
+}
+REQUIRED_LOG_COLUMNS = {
+    "cpu_load",
+    "setpoint_AI",
+    "cooling_kW_baseline",
+    "cooling_kW_AI",
+}
 
 
 def cop(t):
@@ -30,46 +50,91 @@ def cop(t):
 
 # ---------------------------------------------------------------- chargement
 def find_dir():
-    for d in ["./outputs", "../outputs", "/kaggle/working"]:
-        if os.path.exists(os.path.join(d, "metrics.json")):
-            return d
+    for folder in (APP_DIR / "outputs", APP_DIR.parent / "outputs", Path("/kaggle/working")):
+        if (folder / "metrics.json").is_file() and (folder / "test_control_log.csv").is_file():
+            return str(folder)
     return None
 
 
 @st.cache_data(show_spinner=False)
-def load_files(folder):
-    with open(os.path.join(folder, "metrics.json"), encoding="utf-8") as f:
+def load_files(folder, metrics_mtime_ns, log_mtime_ns):
+    metrics_path = Path(folder) / "metrics.json"
+    log_path = Path(folder) / "test_control_log.csv"
+    if metrics_path.stat().st_mtime_ns != metrics_mtime_ns:
+        raise ValueError("metrics.json changed while loading; rerun the application.")
+    if log_path.stat().st_mtime_ns != log_mtime_ns:
+        raise ValueError("test_control_log.csv changed while loading; rerun the application.")
+
+    with open(metrics_path, encoding="utf-8") as f:
         metrics = json.load(f)
-    log = pd.read_csv(os.path.join(folder, "test_control_log.csv"), index_col=0, parse_dates=True)
+    if not isinstance(metrics, dict):
+        raise ValueError("metrics.json must contain a JSON object.")
+    missing_metrics = REQUIRED_METRICS - metrics.keys()
+    if missing_metrics:
+        raise ValueError(f"metrics.json is missing: {', '.join(sorted(missing_metrics))}.")
+
+    log = pd.read_csv(log_path, index_col=0)
+    missing_columns = REQUIRED_LOG_COLUMNS - set(log.columns)
+    if missing_columns:
+        raise ValueError(f"test_control_log.csv is missing: {', '.join(sorted(missing_columns))}.")
+    if log.empty:
+        raise ValueError("test_control_log.csv contains no rows.")
+
+    log.index = pd.to_datetime(log.index, errors="coerce")
+    if log.index.isna().any():
+        raise ValueError("test_control_log.csv contains invalid timestamps.")
+    for column in REQUIRED_LOG_COLUMNS:
+        log[column] = pd.to_numeric(log[column], errors="coerce")
+    if log[list(REQUIRED_LOG_COLUMNS)].isna().any().any():
+        raise ValueError("test_control_log.csv contains non-numeric or missing values.")
+    log = log.sort_index()
     return metrics, log
 
 
 @st.cache_resource(show_spinner=False)
-def load_rf(folder):
-    path = os.path.join(folder, "rf_hvac_controller.joblib")
-    if not os.path.exists(path):
+def load_rf(path, model_mtime_ns):
+    model_path = Path(path)
+    if not model_path.is_file():
         return None
+    if model_path.stat().st_mtime_ns != model_mtime_ns:
+        raise ValueError("rf_hvac_controller.joblib changed while loading; rerun the application.")
     import joblib
-    return joblib.load(path)
+    return joblib.load(model_path)
 
 
 with st.sidebar:
     st.header("Données")
-    folder = st.text_input("Dossier des résultats", value=find_dir() or "./outputs")
+    folder_text = st.text_input("Dossier des résultats", value=find_dir() or str(APP_DIR / "outputs"))
     st.caption("Dossier généré par le notebook (metrics.json, test_control_log.csv).")
 
-if not os.path.exists(os.path.join(folder, "metrics.json")) or \
-        not os.path.exists(os.path.join(folder, "test_control_log.csv")):
+folder = Path(folder_text).expanduser()
+if not folder.is_absolute():
+    folder = (APP_DIR / folder).resolve()
+metrics_path = folder / "metrics.json"
+log_path = folder / "test_control_log.csv"
+
+if not metrics_path.is_file() or not log_path.is_file():
     st.title("Refroidissement piloté par IA")
     st.error(f"Fichiers introuvables dans « {folder} ».")
     st.markdown(
-        "Exécutez le notebook `datacenter_cooling_ai.ipynb`, puis copiez le dossier `outputs/` "
-        "à côté de `app.py` (ou indiquez son chemin dans la barre latérale)."
+        "Exécutez le notebook `datacenter_cooling_ai.ipynb`. L’application recherche `outputs/` "
+        "à côté de `app.py` ou à la racine du projet; vous pouvez aussi indiquer un autre chemin."
     )
     st.stop()
 
-metrics, log = load_files(folder)
-rf = load_rf(folder)
+try:
+    metrics, log = load_files(
+        str(folder),
+        metrics_path.stat().st_mtime_ns,
+        log_path.stat().st_mtime_ns,
+    )
+except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+    st.title("Refroidissement piloté par IA")
+    st.error(f"Impossible de charger les résultats : {exc}")
+    st.stop()
+
+rf_path = folder / "rf_hvac_controller.joblib"
+rf = load_rf(str(rf_path), rf_path.stat().st_mtime_ns if rf_path.is_file() else 0)
 
 # ---------------------------------------------------------------- en-tête
 st.title("Refroidissement d'un datacenter piloté par IA")
@@ -123,7 +188,7 @@ with tab_over:
 # ---------------------------------------------------------------- 2. pilotage
 with tab_ctrl:
     days = max(1, int(np.ceil((log.index[-1] - log.index[0]).total_seconds() / 86400)))
-    n_days = st.slider("Jours affichés", 1, days, min(3, days))
+    n_days = st.slider("Jours affichés", 1, days, min(3, days)) if days > 1 else 1
     sub = log[log.index < log.index[0] + pd.Timedelta(days=n_days)]
     base_sp = metrics.get("BASE_SETPOINT", 20.0)
 
@@ -182,19 +247,20 @@ with tab_whatif:
     co2 = w2.slider("Facteur d'émission (kg CO₂/kWh)", 0.0, 1.0, 0.45, 0.01)
     price = w2.slider("Prix du kWh", 0.01, 0.50, 0.10, 0.01)
 
-    dt_h = (log.index[1] - log.index[0]).total_seconds() / 3600 if len(log) > 1 else 5 / 60
-    p_it = n_serv * (p_idle + (p_max - p_idle) * log["cpu_load"].values)
-    k_base = (p_it / cop(base)).sum() * dt_h
-    k_ai = (p_it / cop(log["setpoint_AI"].values)).sum() * dt_h
-    saved = k_base - k_ai
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Consigne fixe", f"{k_base:,.0f} kWh")
-    m2.metric("Pilotage IA", f"{k_ai:,.0f} kWh")
-    m3.metric("Économie", f"{saved:,.0f} kWh", f"{100 * saved / k_base:.2f} %")
-    m4.metric("CO₂ évité / coût", f"{saved * co2:,.0f} kg", f"{saved * price:,.1f}", delta_color="off")
     if p_max <= p_idle:
         st.warning("La puissance à pleine charge doit dépasser celle au repos.")
+    else:
+        dt_h = (log.index[1] - log.index[0]).total_seconds() / 3600 if len(log) > 1 else 5 / 60
+        p_it = n_serv * (p_idle + (p_max - p_idle) * log["cpu_load"].values)
+        k_base = (p_it / cop(base)).sum() * dt_h
+        k_ai = (p_it / cop(log["setpoint_AI"].values)).sum() * dt_h
+        saved = k_base - k_ai
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Consigne fixe", f"{k_base:,.0f} kWh")
+        m2.metric("Pilotage IA", f"{k_ai:,.0f} kWh")
+        m3.metric("Économie", f"{saved:,.0f} kWh", f"{100 * saved / k_base:.2f} %")
+        m4.metric("CO₂ évité / coût", f"{saved * co2:,.0f} kg", f"{saved * price:,.1f}", delta_color="off")
     st.caption("Le journal garde les consignes IA du notebook : seule l'estimation d'énergie change.")
 
 # ---------------------------------------------------------------- 5. décision en direct
