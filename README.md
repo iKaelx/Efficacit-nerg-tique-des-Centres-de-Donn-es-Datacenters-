@@ -1,86 +1,65 @@
-# Efficacité énergétique des centres de données
+# AI-driven data-center cooling
 
-Projet de démonstration pour anticiper la charge des serveurs, détecter les risques de points chauds et proposer une consigne de refroidissement plus efficace.
+Reduce the electricity bill and carbon footprint of a server room by controlling the HVAC supply-air setpoint.
 
-## Objectifs et composants
-
-| Composant | Technique | Fonction |
+| Module | Technique | Role |
 |---|---|---|
-| Prévision de charge | LSTM | Prévoir la charge CPU sur les 30 prochaines minutes |
-| Cartes thermiques | CNN | Estimer le risque de point chaud à partir de cartes 2D |
-| Pilotage HVAC | Random Forest | Proposer une consigne de soufflage entre 16 et 26 °C |
-| Démonstration | Streamlit | Explorer les résultats, les journaux et une décision de contrôle |
+| Forecast | LSTM | Predicts the servers' CPU load for the next 30 min |
+| Thermal analysis | CNN | Reads the 2D rack heat map, outputs a hotspot probability |
+| Control | Random Forest + safety layer | Chooses the supply-air setpoint (cools harder if hotspot risk > 80 %) |
+| Evaluation | Energy model | kWh, cost, CO₂ and PUE vs a fixed setpoint |
 
-Le notebook peut utiliser les jeux Kaggle **Server Workload Traces** et **Data Center Temperature & Humidity Sensors**. Ces données ne sont pas incluses dans le dépôt. Sans fichiers CSV compatibles, le notebook utilise un jeu synthétique reproductible et signale explicitement ce mode.
+## Project layout
 
-## Démarrage rapide (Windows PowerShell)
-
-Python 3.12 a été utilisé pour valider l’exécution.
-
-Depuis la racine du dépôt :
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-notebook.txt
-python -m pip install -r frontend\requirements.txt
+```
+notebooks/datacenter_cooling_ai.ipynb   train the 3 models, export ONE .mpk package
+models/                                 put the .mpk here (demo_synthetic.mpk = fake-data demo, replace it)
+src/cooling_ai/engine.py                loads the .mpk and runs LSTM + CNN + RF (the reusable code)
+app/streamlit_app.py                    Streamlit front-end
+scripts/run_cli.py                      same engine from the command line
+tests/test_engine.py                    pytest smoke tests
+data/                                   put the two Kaggle CSV files here when training locally
+.vscode/                                launch (F5), tasks and settings
 ```
 
-Ouvrir ensuite `datacenter_cooling_ai.ipynb` dans Jupyter et exécuter les cellules dans l’ordre :
+## Workflow
 
-```powershell
-python -m notebook datacenter_cooling_ai.ipynb
+1. **Setup (VS Code)**: open this folder, create a virtual environment, then
+   `python -m pip install -r requirements.txt`. Select it as the Python interpreter and as the notebook kernel.
+2. **Train**: open `notebooks/datacenter_cooling_ai.ipynb` and *Run All*.
+   - *Kaggle (GPU)*: Add Input → **Server Workload Traces** + **Data Center Temperature & Humidity Sensors**.
+     Download `datacenter_cooling_models.mpk` from `/kaggle/working`.
+   - *Local*: put both CSVs in `data/`; the `.mpk` is written straight to `models/`.
+   - If a dataset is missing the notebook stops with an explicit error (`REQUIRE_REAL_DATA = True`),
+     so you never train on synthetic data by accident.
+3. **Install the models**: copy the `.mpk` into `models/` (or upload it in the app sidebar). That is the whole "installation".
+4. **Run the front-end**: `streamlit run app/streamlit_app.py` (or F5 → *Streamlit app*).
+5. **Or use the code directly**:
+
+```python
+from cooling_ai import CoolingEngine, load_csv
+
+engine = CoolingEngine.from_mpk("models/datacenter_cooling_models.mpk")
+df = load_csv("data/my_room.csv", engine.meta)     # time, cpu, T_0..T_n, optional hum
+print(engine.decide(df).as_dict())                 # setpoint to apply NOW
+summary, log = engine.energy_report(engine.run(df))  # savings over the whole series
 ```
 
-Pour lancer le tableau de bord :
+CLI: `python scripts/run_cli.py --csv data/my_room.csv` writes `outputs/control_log.csv` and `outputs/report.json`.
 
-```powershell
-Set-Location frontend
-python -m streamlit run app.py
-```
+## CSV format expected by the app / CLI
 
-L’application est disponible à `http://localhost:8501`. Elle recherche les résultats dans `frontend/outputs/`, puis dans `outputs/` à la racine du dépôt. Vous pouvez aussi préciser un autre dossier dans sa barre latérale.
+A time column (`time`, `timestamp`, `date`...), `cpu` (0-1 or 0-100 %), the sensor columns
+`T_0 ... T_{n-1}` (same count as the trained package, shown in the app's *Models and data* tab) and optionally `hum`.
+Data is resampled to the model's time step (5 min) and needs at least 37 steps.
 
-## Utiliser les données Kaggle
+## Honest limits (state them in the report)
 
-1. Télécharger les deux jeux de données Kaggle et placer les CSV dans un dossier local (par exemple `data/`).
-2. Dans la cellule `CONFIG` du notebook, renseigner `WORKLOAD_CSV` et `SENSOR_CSV` avec les chemins des fichiers.
-3. Exécuter toutes les cellules et vérifier dans la sortie que les fichiers attendus ont été chargés et que le mode synthétique n’a pas été activé.
-
-Le notebook essaie aussi de détecter les fichiers sous `/kaggle/input` lorsqu’il est exécuté sur Kaggle. Si des chemins explicites sont fournis mais que les fichiers sont invalides, l’exécution s’arrête avec l’erreur de lecture au lieu de masquer le problème par un jeu synthétique.
-
-## Fichiers produits
-
-Le notebook crée `outputs/` dans son répertoire de travail (ou `/kaggle/working/` sur Kaggle) :
-
-- `metrics.json` : métriques des modèles et de l’estimation énergétique ;
-- `test_control_log.csv` : charge, consigne proposée et puissance de refroidissement sur le test ;
-- `lstm_cpu_forecast.keras`, `cnn_hotspot.keras` : modèles de prévision et de classification ;
-- `rf_hvac_controller.joblib` : modèle de proposition de consigne.
-
-Le tableau de bord lit ces fichiers. Les artefacts générés ne sont pas nécessaires au code source et sont ignorés par Git.
-
-## Tests
-
-Depuis la racine du dépôt, après installation des dépendances du frontend :
-
-```powershell
-python -m unittest discover -s frontend\tests -v
-```
-
-## Méthodologie et limites
-
-Les séries sont alignées sur un pas de cinq minutes, puis séparées chronologiquement en ensembles d’entraînement, validation et test. Les jeux Kaggle peuvent provenir de salles et de périodes différentes ; leur alignement ne constitue pas une mesure de causalité physique.
-
-Les sources publiques ne fournissent pas toujours les coordonnées physiques des capteurs ni les actions HVAC réelles. Le Random Forest apprend donc à imiter une politique oracle basée sur un modèle thermique simplifié. L’énergie, le PUE, les coûts et les émissions sont des estimations paramétrables, pas des mesures d’un site.
-
-Les prédictions LSTM et CNN utilisées comme variables d’entraînement du Random Forest sont produites par des modèles ajustés sur la période d’entraînement. Elles sont donc en partie « in-sample » ; une validation chronologique walk-forward est nécessaire avant d’interpréter les résultats comme une performance de généralisation.
-
-**Cette démonstration ne commande pas d’équipement.** Toute utilisation réelle nécessiterait une validation avec des mesures HVAC, des limites de sécurité validées par des spécialistes et un mécanisme de retour à une consigne sûre.
-
-## Livrables
-
-- [Notebook de modélisation](./datacenter_cooling_ai.ipynb)
-- [Rapport technique](./Rapport%20technique%20%E2%80%94%20Efficacit%C3%A9%20%C3%A9nerg%C3%A9tique%20des%20centres%20de%20donn%C3%A9es.docx)
-- [Interface Streamlit](./frontend/app.py)
-- [Instructions du frontend](./frontend/README.md)
+- The public datasets contain no record of real HVAC actions. The Random Forest imitates an **oracle policy**
+  computed with future temperatures; at run time it only sees information available now.
+- The two datasets come from different sources: their time axes are aligned artificially and the sensors are laid out
+  on the heat-map grid row by row.
+- Energy, cost and CO₂ figures come from a **simplified model** (server power, CRAC efficiency curve, thermal coupling `K_PASS`),
+  not from measurements. Validate with real metering before quoting them.
+- `models/demo_synthetic.mpk` was trained on **synthetic** data to demonstrate the workflow; the app shows a warning while it is selected.
+- `.mpk` files contain a pickled scikit-learn model: only install packages you trust.

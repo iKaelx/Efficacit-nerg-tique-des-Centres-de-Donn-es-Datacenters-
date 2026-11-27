@@ -1,6 +1,7 @@
-.venv/
 __pycache__/
-*.py[cod]
-.ipynb_checkpoints/
+.venv/
 outputs/
-frontend/outputs/
+notebooks/outputs/
+data/*.csv
+models/installed/
+.ipynb_checkpoints/
